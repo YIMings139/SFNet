@@ -9,28 +9,20 @@ import torch.cuda
 
 
 class PositionalEncodingFourier(nn.Module):
-    """
-    Positional encoding relying on a fourier kernel matching the one used in the
-    "Attention is all of Need" paper. The implementation builds on DeTR code
-    https://github.com/facebookresearch/detr/blob/master/models/position_encoding.py
-    """
-
+    """赋予特征位置信息"""
     def __init__(self, hidden_dim=32, dim=768, temperature=10000):
         super().__init__()
         self.token_projection = nn.Conv2d(hidden_dim * 2, dim, kernel_size=1)
 
         self.scale = 2 * math.pi
         self.temperature = temperature
-
         self.hidden_dim = hidden_dim
         self.dim = dim
 
     def forward(self, B, H, W):
         mask = torch.zeros(B, H, W).bool().to(self.token_projection.weight.device)
-
         not_mask = ~mask
         y_embed = not_mask.cumsum(1, dtype=torch.float32)
-
         x_embed = not_mask.cumsum(2, dtype=torch.float32)
 
         eps = 1e-6
@@ -38,12 +30,10 @@ class PositionalEncodingFourier(nn.Module):
         x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale
 
         dim_t = torch.arange(self.hidden_dim, dtype=torch.float32, device=mask.device)
-
         dim_t = self.temperature ** (2 * (dim_t // 2) / self.hidden_dim)
 
         pos_x = x_embed[:, :, :, None] / dim_t
         pos_y = y_embed[:, :, :, None] / dim_t
-        #
 
         pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(),
                              pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
@@ -51,17 +41,12 @@ class PositionalEncodingFourier(nn.Module):
                              pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
 
         pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
-
         pos = self.token_projection(pos)
-
         return pos
 
 
 class XCA(nn.Module):
-    """ Cross-Covariance Attention (XCA) operation where the channels are updated using a weighted
-     sum. The weights are obtained from the (softmax normalized) Cross-covariance
-    matrix (Q^T K \\in d_h \\times d_h)
-    """
+    """交协方差注意力的实现"""
 
     def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -69,7 +54,6 @@ class XCA(nn.Module):
         self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -80,7 +64,6 @@ class XCA(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
 
         qkv = qkv.permute(2, 0, 3, 1, 4)
-
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         q = q.transpose(-2, -1)
@@ -91,7 +74,6 @@ class XCA(nn.Module):
         k = torch.nn.functional.normalize(k, dim=-1)
 
         attn = (q @ k.transpose(-2, -1)) * self.temperature
-
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
@@ -107,12 +89,10 @@ class XCA(nn.Module):
 
 
 class LayerNorm(nn.Module):
-
     def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(normalized_shape))
         self.bias = nn.Parameter(torch.zeros(normalized_shape))
-
         self.eps = eps
         self.data_format = data_format
         if self.data_format not in ["channels_last", "channels_first"]:
@@ -122,16 +102,11 @@ class LayerNorm(nn.Module):
     def forward(self, x):
         if self.data_format == "channels_last":
             return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
-
         elif self.data_format == "channels_first":
             u = x.mean(1, keepdim=True)
-
             s = (x - u).pow(2).mean(1, keepdim=True)
-
             x = (x - u) / torch.sqrt(s + self.eps)
-
             x = self.weight[:, None, None] * x + self.bias[:, None, None]
-
             return x
 
 
@@ -150,7 +125,6 @@ class BNGELU(nn.Module):
 
 class Conv(nn.Module):
     def __init__(self, nIn, nOut, kSize, stride, padding=(0, 0), dilation=(1, 1), groups=1, bn_act=False, bias=False):
-
         super().__init__()
 
         self.bn_act = bn_act
@@ -171,10 +145,32 @@ class Conv(nn.Module):
         return output
 
 
+class DeConv(nn.Module):
+    """"反置卷积"""
+
+    def __init__(self, nIn, nOut, kSize, stride, padding=(0, 0), dilation=(1, 1), groups=1, bn_act=False, bias=False):
+        super().__init__()
+
+        self.bn_act = bn_act
+
+        self.deconv = nn.ConvTranspose2d(nIn, nOut, kernel_size=kSize,
+                                         stride=stride, padding=padding,
+                                         dilation=dilation, groups=groups, bias=bias)
+
+        if self.bn_act:
+            self.bn_gelu = BNGELU(nOut)
+
+    def forward(self, x):
+        output = self.deconv(x)
+
+        if self.bn_act:
+            output = self.bn_gelu(output)
+
+        return output
+
+
 class CDilated(nn.Module):
-    """
-    This class defines the dilated convolution.
-    """
+    """空洞卷积"""
 
     def __init__(self, nIn, nOut, kSize, stride=1, d=1, groups=1, bias=False):
         super().__init__()
@@ -187,10 +183,8 @@ class CDilated(nn.Module):
         return output
 
 
-class ConvEncoder(nn.Module):
-    """
-    ConvEncoder in ETPM.
-    """
+class DilatedConv(nn.Module):
+    """Lite-Mono中的连续扩张卷积模块"""
 
     def __init__(self, dim, k, dilation=1, stride=1, drop_path=0.,
                  layer_scale_init_value=1e-6, expan_ratio=6):
@@ -212,7 +206,6 @@ class ConvEncoder(nn.Module):
 
     def forward(self, x):
         input = x
-
         x = self.ddwconv(x)
         x = self.bn1(x)
 
@@ -230,7 +223,7 @@ class ConvEncoder(nn.Module):
 
 
 class channelAttention(nn.Module):
-    """ Channel attention module"""
+    """ Channel attention module(CAM)"""
 
     def __init__(self, k_size=5):
         super(channelAttention, self).__init__()
@@ -243,19 +236,18 @@ class channelAttention(nn.Module):
 
     def forward(self, x):
         indentity = x.clone()
-
         y_avg = self.avg_pool(x)
         y_max = self.max_pool(x)
-
         y_1 = self.conv1(y_avg.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
-
+        # 16,6,1,1 ->16,6,1->16,1,6 conv -> 16,1,6 -> 16,6,1 ->16,6,1,1
         y_2 = self.conv2(y_max.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
-
         attn = self.sigmoid(y_1 + y_2)
         return indentity * attn.expand_as(indentity)
 
 
 class SpatialAttention(nn.Module):
+    """Spatial attention module(SAM)"""
+
     def __init__(self, kernel_size=7):
         super(SpatialAttention, self).__init__()
         self.vertial_pool = nn.AvgPool2d(kernel_size=(kernel_size, 1), stride=1,
@@ -274,20 +266,18 @@ class SpatialAttention(nn.Module):
         return indentity * attn.expand_as(indentity)
 
 
-class ETPM(nn.Module):
-    '''
-    Edge-Texture Perception Module
-    '''
+class block1(nn.Module):
+    """Global-Local Collaboration Module (GLCM)"""
 
     def __init__(self, block, dim, k_1, k_2):
         super().__init__()
-
+        # SEM
         self.conv_x = Conv(dim, dim, kSize=(k_1, 3), stride=1, padding=(int((k_1 - 1) / 2), 1), groups=dim)
         self.conv_y = Conv(dim, dim, kSize=(3, k_1), stride=1, padding=(1, int((k_1 - 1) / 2)), groups=dim)
         self.conv = Conv(dim, dim, 3, 1, 1, bn_act=True)
 
         self.CDC_block = block
-
+        # VFEM
         self.spa = SpatialAttention(kernel_size=k_1)
         self.cha = channelAttention(k_size=k_2)
 
@@ -309,10 +299,8 @@ class ETPM(nn.Module):
         return out
 
 
-class Transformer_Block(nn.Module):
-    """
-    Transformer Block uses XCA.
-    """
+class LGFI(nn.Module):
+    """Lite-Mono中的LGFI。"""
 
     def __init__(self, dim, drop_path=0., layer_scale_init_value=1e-6, expan_ratio=6,
                  use_pos_emb=True, num_heads=6, qkv_bias=True, attn_drop=0., drop=0.):
@@ -369,12 +357,11 @@ class Transformer_Block(nn.Module):
         return x
 
 
-class PFIU(nn.Module):
+class block2(nn.Module):
+    """Pyramid Feature Integration Unit(PFIU)"""
+
     def __init__(self, dim, expan_ratio=6, layer_scale_init_value=1e-6, drop_path=0.2):
-        """
-        Pyramid Feature Integration Unit
-        """
-        super(PFIU, self).__init__()
+        super(block2, self).__init__()
         channels_mid = int(dim / 4)
 
         self.conv_master = nn.Conv2d(dim, int(dim / 4), kernel_size=1, bias=False)
@@ -411,14 +398,13 @@ class PFIU(nn.Module):
 
     def forward(self, x):
         identity = x.clone()
-        # Master branch
+
         x_master = self.conv_master(x)
         x_master = self.bn_master(x_master)
 
         x_gpb = self.spa_1(self.cha(x))
         x_gpb = self.conv_gpb(x_gpb)
 
-        # Branch 1
         x1_1 = self.conv7x7_1(x)
         x1_1 = self.bn1_1(x1_1)
         x1_1 = self.gelu(x1_1)
@@ -426,7 +412,6 @@ class PFIU(nn.Module):
         x1_2 = self.conv7x7_2(x1_1)
         x1_2 = self.bn1_2(x1_2)
 
-        # Branch 2
         x2_1 = self.conv5x5_1(x1_1)
         x2_1 = self.bn2_1(x2_1)
         x2_1 = self.gelu(x2_1)
@@ -434,7 +419,6 @@ class PFIU(nn.Module):
         x2_2 = self.conv5x5_2(x2_1)
         x2_2 = self.bn2_2(x2_2)
 
-        # Branch 3
         x3_1 = self.conv3x3_1(x2_1)
         x3_1 = self.bn3_1(x3_1)
         x3_1 = self.gelu(x3_1)
@@ -446,7 +430,6 @@ class PFIU(nn.Module):
 
         y_1 = self.bn(x_out + x_gpb)
 
-        # MLP
         y = y_1.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
         y = self.pwconv1(y)
         y = self.gelu(y)
@@ -461,38 +444,30 @@ class PFIU(nn.Module):
 
 
 class SFNet(nn.Module):
-    """
-    SFNet
-    """
 
-    def __init__(self, in_chans=3, height=192, width=640,
-                 global_block=[1, 1, 1], global_block_type=['None', 'Transformer_Block', 'Transformer_Block'],
+    def __init__(self, in_chans=3, model='SFNet', height=192, width=640,
+                 global_block=[1, 1, 1], global_block_type=['LGFI', 'LGFI', 'LGFI'],
                  drop_path_rate=0.2, layer_scale_init_value=1e-6, expan_ratio=6,
-                 heads=[8, 8, 8], **kwargs):
+                 heads=[8, 8, 8], use_pos_embd_xca=[True, False, False], **kwargs):
 
         super().__init__()
 
-        self.k_1 = [11, 7, 5]
-        self.num_ch_enc = np.array([48, 80, 128])
-        self.depth = [4, 4, 10]
-        self.dims = [48, 80, 128]
-        if height == 192 and width == 640:
-            self.dilation = [[1, 2, 3], [1, 2, 3], [1, 2, 3, 1, 2, 3, 2, 4, 6]]
-        elif height == 320 and width == 1024:
-            self.dilation = [[1, 2, 5], [1, 2, 5], [1, 2, 5, 1, 2, 5, 2, 4, 10]]
+        if model == 'SFNet':
+            self.k_1 = [11, 7, 5]
+            self.num_ch_enc = np.array([48, 80, 128])
+            self.depth = [4, 4, 10]
+            self.dims = [48, 80, 128]
+            if height == 192 and width == 640:
+                self.dilation = [[1, 2, 3], [1, 2, 3], [1, 2, 3, 1, 2, 3, 2, 4, 6]]
 
         for g in global_block_type:
-            assert g in ['None', 'Transformer_Block']
+            assert g in ['None', 'LGFI']
 
         self.stem1 = nn.Sequential(
             Conv(in_chans, self.dims[0], kSize=3, stride=2, padding=1, bn_act=False)
-
         )
-
         self.stem2 = nn.Sequential(Conv(self.dims[0], self.dims[1], kSize=3, stride=2, padding=1, bn_act=False))
-
         self.stem3 = nn.Sequential(Conv(self.dims[1], self.dims[2], kSize=3, stride=2, padding=1, bn_act=False))
-
         self.stem4 = nn.Sequential(Conv(self.dims[2], self.dims[2], kSize=3, stride=2, padding=1, bn_act=False))
 
         self.stages = nn.ModuleList()
@@ -507,32 +482,32 @@ class SFNet(nn.Module):
             dia_list = nn.ModuleList()
             for j in range(self.depth[i]):
                 if j > self.depth[i] - global_block[i] - 1:
-                    if global_block_type[i] == 'Transformer_Block':
-                        global_blocks.append(Transformer_Block(dim=self.dims[i], drop_path=dp_rates[cur + j],
-                                                               expan_ratio=expan_ratio, num_heads=heads[i],
-                                                               layer_scale_init_value=layer_scale_init_value,
-                                                               ))
+                    if global_block_type[i] == 'LGFI':
+                        global_blocks.append(LGFI(dim=self.dims[i], drop_path=dp_rates[cur + j],
+                                                  expan_ratio=expan_ratio,
+                                                  use_pos_emb=use_pos_embd_xca[i], num_heads=heads[i],
+                                                  layer_scale_init_value=layer_scale_init_value,
+                                                  ))
 
                     else:
                         raise NotImplementedError
                 else:
-                    dia = ConvEncoder(dim=self.dims[i], k=3, dilation=self.dilation[i][j], drop_path=dp_rates[cur + j],
+                    dia = DilatedConv(dim=self.dims[i], k=3, dilation=self.dilation[i][j], drop_path=dp_rates[cur + j],
                                       layer_scale_init_value=layer_scale_init_value, expan_ratio=expan_ratio)
                     dia_list.append(dia)
 
-            stage_blocks.append(ETPM(block=nn.Sequential(*dia_list), dim=self.dims[i], k_1=self.k_1[i], k_2=3))
-            # if i != 0:
-            #     stage_blocks.append(*global_blocks)
+            stage_blocks.append(block1(block=nn.Sequential(*dia_list), dim=self.dims[i], k_1=self.k_1[i], k_2=3))
+            if i != 0:
+                stage_blocks.append(*global_blocks)
 
             self.stages.append(nn.Sequential(*stage_blocks))
 
             cur += self.depth[i]
 
-        self.PFIU = PFIU(dim=self.dims[2], expan_ratio=expan_ratio, drop_path=drop_path_rate)
+        self.block2 = block2(dim=self.dims[2], expan_ratio=expan_ratio, drop_path=drop_path_rate)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
 
@@ -547,7 +522,6 @@ class SFNet(nn.Module):
     def forward_features(self, x):
         features = []
         x = (x - 0.45) / 0.225
-
         x = self.stem1(x)
 
         for s in range(len(self.stages[0]) - 1):

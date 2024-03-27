@@ -39,13 +39,8 @@ def parse_args():
 
     parser.add_argument('--model', type=str,
                         help='name of a pretrained model to use',
-                        default="lite-mono",
-                        choices=[
-                            "mono_640x192",
-                            "lite-mono",
-                            "lite-mono-small",
-                            "lite-mono-tiny",
-                            "lite-mono-8m"])
+                        default="SFNet",
+                       )
 
     parser.add_argument('--ext', type=str,
                         help='image extension to search for in folder', default="png")

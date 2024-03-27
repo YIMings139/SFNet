@@ -14,7 +14,7 @@ class SFNetOptions:
         self.parser.add_argument("--data_path",
                                  type=str,
                                  help="path to the training data",
-                                 default=os.path.join('F:\\RAW-data', "kitti_data"))
+                                 default=os.path.join('F:\\SYM', "kitti_data"))
         self.parser.add_argument("--log_dir",
                                  type=str,
                                  help="log directory",

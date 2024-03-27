@@ -6,17 +6,19 @@ import torch
 from torch.utils.data import DataLoader
 from layers import disp_to_depth
 from utils import readlines
-from options import LiteMonoOptions
+from options import SFNetOptions
 import datasets
 import networks
 import time
 from thop import clever_format
 from thop import profile
-os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
-cv2.setNumThreads(0)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1) 加速运行用
 
 splits_dir = os.path.join(os.path.dirname(__file__), "splits")
+
 
 def sec_to_hm(t):
     """Convert time in seconds to time in hours, minutes and seconds
@@ -37,11 +39,14 @@ def sec_to_hm_str(t):
     h, m, s = sec_to_hm(t)
     return "{:02d}h{:02d}m{:02d}s".format(h, m, s)
 
+
+
+
 def profile_once(encoder, decoder, x):
     x_e = x[0, :, :, :].unsqueeze(0)
     x_d = encoder(x_e)
-    flops_e, params_e = profile(encoder, inputs=(x_e, ), verbose=False)
-    flops_d, params_d = profile(decoder, inputs=(x_d, ), verbose=False)
+    flops_e, params_e = profile(encoder, inputs=(x_e,), verbose=False)
+    flops_d, params_d = profile(decoder, inputs=(x_d,), verbose=False)
 
     flops, params = clever_format([flops_e + flops_d, params_e + params_d], "%.3f")
     flops_e, params_e = clever_format([flops_e, params_e], "%.3f")
@@ -61,7 +66,7 @@ def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths
     """
     thresh = np.maximum((gt / pred), (pred / gt))
-    a1 = (thresh < 1.25     ).mean()
+    a1 = (thresh < 1.25).mean()
     a2 = (thresh < 1.25 ** 2).mean()
     a3 = (thresh < 1.25 ** 3).mean()
 
@@ -90,7 +95,6 @@ def batch_post_process_disparity(l_disp, r_disp):
 
 
 def evaluate(opt):
-
     """Evaluates a pretrained model using a specified test set
     """
 
@@ -101,38 +105,33 @@ def evaluate(opt):
 
         opt.load_weights_folder = os.path.expanduser(opt.load_weights_folder)
 
-
         assert os.path.isdir(opt.load_weights_folder), \
             "Cannot find a folder at {}".format(opt.load_weights_folder)
 
-
         print("-> Loading weights from {}".format(opt.load_weights_folder))
 
-        filenames = readlines(os.path.join(splits_dir, opt.eval_split, " _files.txt"))
-
+        filenames = readlines(os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
         encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
         decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
 
         encoder_dict = torch.load(encoder_path)
         decoder_dict = torch.load(decoder_path)
 
-
         dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
                                            encoder_dict['height'], encoder_dict['width'],
                                            [0], 4, is_train=False)
-
-        dataloader = DataLoader(dataset,16, shuffle=False, num_workers=opt.num_workers,
+        batch_size = 1
+        dataloader = DataLoader(dataset, batch_size, shuffle=False, num_workers=opt.num_workers,
                                 pin_memory=True, drop_last=False)  # 16
 
-        encoder = networks.LiteMono(model=opt.model,
-                                    height=encoder_dict['height'],
-                                    width=encoder_dict['width'])
+        encoder = networks.SFNet(model=opt.model,
+                                 height=encoder_dict['height'],
+                                 width=encoder_dict['width'])
         depth_decoder = networks.DepthDecoder(encoder.num_ch_enc, scales=range(3))
         model_dict = encoder.state_dict()
         depth_model_dict = depth_decoder.state_dict()
         encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in model_dict})
         depth_decoder.load_state_dict({k: v for k, v in decoder_dict.items() if k in depth_model_dict})
-
 
         encoder.cuda()
         encoder.eval()
@@ -145,8 +144,12 @@ def evaluate(opt):
             encoder_dict['width'], encoder_dict['height']))
 
         with torch.no_grad():
-            t1 = time_sync()
+
+            ###########
+            # t1 = time_sync()
+
             for data in dataloader:
+
                 input_color = data[("color", 0, 0)].cuda()
 
                 if opt.post_process:
@@ -157,8 +160,8 @@ def evaluate(opt):
 
                 output = depth_decoder(encoder(input_color))
 
-
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
+
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
 
                 if opt.post_process:
@@ -166,10 +169,10 @@ def evaluate(opt):
                     pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
 
                 pred_disps.append(pred_disp)
-            t2 = time_sync()
-            total_time = t2 - t1
-            print("===>total time:{}".format(sec_to_hm_str(total_time)))
-            print("FPS:{}".format(697 / total_time))
+            # t2 = time_sync()
+            # total_time=t2-t1
+            # print("===>total time:{}".format(sec_to_hm_str(total_time)))
+            # print("FPS:{}".format(697/total_time))
 
         pred_disps = np.concatenate(pred_disps)
 
@@ -215,7 +218,7 @@ def evaluate(opt):
             mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
 
             crop = np.array([0.40810811 * gt_height, 0.99189189 * gt_height,
-                             0.03594771 * gt_width,  0.96405229 * gt_width]).astype(np.int32)
+                             0.03594771 * gt_width, 0.96405229 * gt_width]).astype(np.int32)
             crop_mask = np.zeros(mask.shape)
             crop_mask[crop[0]:crop[1], crop[2]:crop[3]] = 1
             mask = np.logical_and(mask, crop_mask)
@@ -245,10 +248,15 @@ def evaluate(opt):
 
     print("\n  " + ("{:>8} | " * 7).format("abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"))
     print(("&{: 8.3f}  " * 7).format(*mean_errors.tolist()) + "\\\\")
-    print("\n  " + ("flops: {0}, params: {1}, flops_e: {2}, params_e:{3}, flops_d:{4}, params_d:{5}").format(flops, params, flops_e, params_e, flops_d, params_d))
+    print("\n  " + ("flops: {0}, params: {1}, flops_e: {2}, params_e:{3}, flops_d:{4}, params_d:{5}").format(flops,
+                                                                                                             params,
+                                                                                                             flops_e,
+                                                                                                             params_e,
+                                                                                                             flops_d,
+                                                                                                             params_d))
     print("\n-> Done!")
 
 
 if __name__ == "__main__":
-    options = LiteMonoOptions()
+    options = SFNetOptions()
     evaluate(options.parse())

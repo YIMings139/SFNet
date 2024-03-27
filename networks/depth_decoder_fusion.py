@@ -67,7 +67,7 @@ class DeConv(nn.Module):
 
 
 class channelAttention(nn.Module):
-    """ Channel attention module"""
+    """ Channel attention module(CAM)"""
 
     def __init__(self, k_size=5):
         super(channelAttention, self).__init__()
@@ -83,13 +83,18 @@ class channelAttention(nn.Module):
 
         y_avg = self.avg_pool(x)
         y_max = self.max_pool(x)
+
         y_1 = self.conv1(y_avg.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+        # 16,6,1,1 ->16,6,1->16,1,6 conv -> 16,1,6 -> 16,6,1 ->16,6,1,1
         y_2 = self.conv2(y_max.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+
         attn = self.sigmoid(y_1 + y_2)
         return indentity * attn.expand_as(indentity)
 
 
 class SpatialAttention(nn.Module):
+    """ Spatial attention module(SAM)"""
+
     def __init__(self, kernel_size=7):
         super(SpatialAttention, self).__init__()
         self.vertial_pool = nn.AvgPool2d(kernel_size=(kernel_size, 1), stride=1,
@@ -108,22 +113,18 @@ class SpatialAttention(nn.Module):
         return indentity * attn.expand_as(indentity)
 
 
-class MFAM(nn.Module):
-    '''
-    Multiscale Feature Aggregation Module.
-    '''
-
+class block3(nn.Module):
     def __init__(self, dim_in, dim_out, Ksize):
-        super(MFAM, self).__init__()
+        super(block3, self).__init__()
         self.conv1x1 = Conv(dim_in, dim_out, 1, 1, bn_act=True)
-
+        # SEM
         self.conv_x = Conv(dim_out, dim_out, kSize=(Ksize, 1), stride=1, padding=(int((Ksize - 1) / 2), 0),
                            groups=dim_out)
         self.conv_y = Conv(dim_out, dim_out, kSize=(1, Ksize), stride=1, padding=(0, int((Ksize - 1) / 2)),
                            groups=dim_out)
         self.conv_refine = Conv(dim_out, dim_out, 3, 1, 1, bn_act=True)
         self.conv5x5 = Conv(dim_out, dim_out, 5, 1, 2, bn_act=False)
-
+        # VFEM
         self.spa = SpatialAttention()
         self.cha = channelAttention()
 
@@ -141,7 +142,6 @@ class MFAM(nn.Module):
 
 class DepthDecoder(nn.Module):
     def __init__(self, num_ch_enc, scales=range(3), num_output_channels=1):
-
         super().__init__()
         self.scales = scales[::-1]
         self.num_output_channels = num_output_channels
@@ -150,7 +150,6 @@ class DepthDecoder(nn.Module):
         self.num_ch_enc = num_ch_enc
 
         self.num_ch_dec = num_ch_enc[::-1]
-
         self.convs = OrderedDict()
         for i in range(2, -1, -1):
 
@@ -182,9 +181,9 @@ class DepthDecoder(nn.Module):
                                      bn_act=True)
 
         self.blocks = nn.ModuleList([
-            MFAM(self.num_ch_dec[0], self.num_ch_dec[0], Ksize=5),
-            MFAM(self.num_ch_dec[1], self.num_ch_dec[1], Ksize=7),
-            MFAM(self.num_ch_dec[2], self.num_ch_dec[2], Ksize=11)
+            block3(self.num_ch_dec[0], self.num_ch_dec[0], Ksize=5),
+            block3(self.num_ch_dec[1], self.num_ch_dec[1], Ksize=7),
+            block3(self.num_ch_dec[2], self.num_ch_dec[2], Ksize=11)
         ])
 
         for s in self.scales:
