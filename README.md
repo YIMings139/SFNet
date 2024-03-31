@@ -15,8 +15,6 @@ The rows (from up to bottom) are RGB images, and the results by [Monodepth2](htt
 
 ## Quantitative results on the KITTI dataset
 ![image](https://github.com/YIMings139/SFNet/blob/main/img/Quantitative_result.png?raw=true)
- All input images were resized to 640 × 192 unless otherwise stated. The best and second best results are highlighted in <font color=red>red</font>  and <font color=blue>blue</font>,respectively. 
- “$\text{M}$”: KITTI monocular video, “$\text{M+Se}$”: monocular video + semantic segmentation, “$\text{M}^{\#}$”: input resolution of 416 x 128. “$\text{M}^{*}$”: input resolution 1024 × 320, “$\text{M}^{\dagger}$”: no pre-training on ImageNet, “$\text{M}^{\ddagger}$ ”: input resolution 832 × 256.
 
 
 
