@@ -2,6 +2,7 @@
 
 SFNet can estimate a depth map from a single image.
 
+We ran our experiments with torch==1.8.1+cu102,  Python 3.6.13 and Ubuntu 18.04. 
 
 ## Data Preparation
 
