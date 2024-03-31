@@ -3,6 +3,10 @@
 SFNet can estimate a depth map from a single image.
 
 
+## Data Preparation
+
+Please refer to [Monodepth2](https://github.com/nianticlabs/monodepth2) to prepare your KITTI data.
+
 
 ## Qualitative results on the KITTI dataset
 
